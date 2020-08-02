@@ -565,6 +565,52 @@ static uint16_t nvme_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     return NVME_NO_COMPLETE;
 }
 
+static uint16_t nvme_compare(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
+    NvmeRequest *req)
+{
+    NvmeCompare *comp = (NvmeCompare *)cmd;
+    uint64_t slba = le64_to_cpu(comp->slba);
+    uint32_t nlb = le32_to_cpu(comp->nlb) + 1;
+    uint64_t prp1 = le64_to_cpu(comp->dptr.prp1);
+    uint64_t prp2 = le64_to_cpu(comp->dptr.prp2);
+
+    uint8_t lba_index  = NVME_ID_NS_FLBAS_INDEX(ns->id_ns.flbas);
+    uint8_t data_shift = ns->id_ns.lbaf[lba_index].ds;
+    uint64_t data_offset = slba << data_shift;
+    uint64_t data_size = (uint64_t)nlb << data_shift;
+
+    void *cmp_buf;
+    void *blk_buf;
+    int cmp;
+    int ret = NVME_SUCCESS;
+
+    trace_pci_nvme_compare(nvme_cid(req), slba, nlb);
+
+    cmp_buf = g_malloc0(data_size);
+    if (nvme_dma_write_prp(n, cmp_buf, data_size, prp1, prp2)) {
+        ret = NVME_INVALID_FIELD | NVME_DNR;
+        goto cmp_free;
+    }
+
+    blk_buf = g_malloc0(data_size);
+    if (blk_pread(n->conf.blk, data_offset, blk_buf, data_size) < 0) {
+        ret = NVME_INTERNAL_DEV_ERROR | NVME_DNR;
+        goto blk_free;
+    }
+
+    cmp = memcmp(cmp_buf, blk_buf, data_size);
+    if (cmp) {
+        ret = NVME_CMP_FAILURE | NVME_DNR;
+    }
+
+blk_free:
+    g_free(blk_buf);
+cmp_free:
+    g_free(cmp_buf);
+
+    return ret;
+}
+
 static uint16_t nvme_io_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     NvmeNamespace *ns;
@@ -586,6 +632,8 @@ static uint16_t nvme_io_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
     case NVME_CMD_WRITE:
     case NVME_CMD_READ:
         return nvme_rw(n, ns, cmd, req);
+    case NVME_CMD_COMPARE:
+        return nvme_compare(n, ns, cmd, req);
     default:
         trace_pci_nvme_err_invalid_opc(cmd->opcode);
         return NVME_INVALID_OPCODE | NVME_DNR;
