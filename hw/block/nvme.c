@@ -588,8 +588,16 @@ static uint16_t nvme_compare(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     void *blk_buf;
     int cmp;
     int ret = NVME_SUCCESS;
+    uint8_t fuse;
 
     trace_pci_nvme_compare(nvme_cid(req), slba, nlb);
+
+    fuse = NVME_CMD_FLAGS_FUSE(comp->flags);
+    if (n->id_ctrl.fuses && fuse) {
+        if (fuse != 1) {
+            return NVME_INVALID_FIELD | NVME_DNR;
+        }
+    }
 
     cmp_buf = g_malloc0(data_size);
     if (nvme_dma_write_prp(n, cmp_buf, data_size, prp1, prp2)) {
@@ -1486,6 +1494,29 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
     }
 }
 
+static void nvme_quiesce_sq_arb(NvmeCtrl *n)
+{
+    int sqid;
+
+    for (sqid = 0; sqid < n->params.max_ioqpairs + 1; sqid++) {
+        if (n->sq[sqid] && n->sq[sqid]->timer) {
+            timer_del(n->sq[sqid]->timer);
+        }
+    }
+}
+
+static void nvme_unquiesce_sq_arb(NvmeCtrl *n)
+{
+    int sqid;
+
+    for (sqid = 0; sqid < n->params.max_ioqpairs + 1; sqid++) {
+        if (n->sq[sqid] && n->sq[sqid]->timer) {
+            timer_mod(n->sq[sqid]->timer,
+                    qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + 500);
+        }
+    }
+}
+
 static struct NvmeRequest *nvme_get_req(NvmeSQueue *sq, NvmeCmd *cmd)
 {
     NvmeRequest *req;
@@ -1516,6 +1547,61 @@ static uint16_t nvme_process_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
     return status;
 }
 
+static void nvme_process_fused_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
+{
+    uint16_t status;
+    hwaddr addr;
+    int next_head;
+    NvmeCmd next_cmd;
+    NvmeRequest *next_req;
+    NvmeSQueue *sq = req->sq;
+    NvmeCQueue *cq = n->cq[sq->cqid];
+
+    /*
+     * To synchronize all the sq handlers, we need to disable timers for every
+     * sqs first to process command in an atomic context (e.g. FUSED).
+     */
+    nvme_quiesce_sq_arb(n);
+
+    if (cmd->opcode != NVME_CMD_COMPARE) {
+        req->status = NVME_INVALID_OPCODE | NVME_DNR;
+        nvme_enqueue_req_completion(cq, req);
+        goto out;
+    }
+
+    if (nvme_sq_empty(sq)) {
+        req->status = NVME_CMD_ABORT_MISSING_FUSE | NVME_DNR;
+        nvme_enqueue_req_completion(cq, req);
+        goto out;
+    }
+
+    next_head = (sq->head + 1) % sq->size;
+    addr = sq->dma_addr + next_head * n->sqe_size;
+    nvme_addr_read(n, addr, (void *)&next_cmd, sizeof(next_cmd));
+    next_req = nvme_get_req(sq, &next_cmd);
+
+    nvme_inc_sq_head_n(sq, 2);
+
+    if (next_cmd.opcode != NVME_CMD_WRITE ||
+            NVME_CMD_FLAGS_FUSE(next_cmd.flags) != 2) {
+        req->status = NVME_CMD_ABORT_MISSING_FUSE | NVME_DNR;
+        nvme_enqueue_req_completion(cq, req);
+        goto proc;
+    }
+
+    status = nvme_process_sqe(n, cmd, req);
+    if (status != NVME_SUCCESS) {
+        next_req->status = NVME_CMD_ABORT_FAILED_FUSE | NVME_DNR;
+        nvme_enqueue_req_completion(cq, next_req);
+        goto out;
+    }
+
+proc:
+    nvme_process_sqe(n, &next_cmd, next_req);
+out:
+    nvme_unquiesce_sq_arb(n);
+}
+
 static void nvme_process_sq(void *opaque)
 {
     NvmeSQueue *sq = opaque;
@@ -1530,6 +1616,11 @@ static void nvme_process_sq(void *opaque)
         nvme_addr_read(n, addr, (void *)&cmd, sizeof(cmd));
 
         req = nvme_get_req(sq, &cmd);
+
+        if (unlikely(NVME_CMD_FLAGS_FUSE(cmd.flags) == 1)) {
+            nvme_process_fused_sqe(n, &cmd, req);
+            continue;
+        }
 
         nvme_inc_sq_head(sq);
         nvme_process_sqe(n, &cmd, req);
@@ -2252,6 +2343,7 @@ static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
     id->nn = cpu_to_le32(n->num_namespaces);
     id->oncs = cpu_to_le16(NVME_ONCS_WRITE_ZEROS | NVME_ONCS_TIMESTAMP |
                            NVME_ONCS_FEATURES);
+    id->fuses = 1;
 
     subnqn = g_strdup_printf("nqn.2019-08.org.qemu:%s", n->params.serial);
     strpadcpy((char *)id->subnqn, sizeof(id->subnqn), subnqn, '\0');
