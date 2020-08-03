@@ -146,9 +146,14 @@ static void nvme_inc_cq_tail(NvmeCQueue *cq)
     }
 }
 
+static void nvme_inc_sq_head_n(NvmeSQueue *sq, int count)
+{
+    sq->head = (sq->head + count) % sq->size;
+}
+
 static void nvme_inc_sq_head(NvmeSQueue *sq)
 {
-    sq->head = (sq->head + 1) % sq->size;
+    nvme_inc_sq_head_n(sq, 1);
 }
 
 static uint8_t nvme_cq_full(NvmeCQueue *cq)
