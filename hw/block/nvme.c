@@ -1481,34 +1481,51 @@ static uint16_t nvme_admin_cmd(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
     }
 }
 
+static struct NvmeRequest *nvme_get_req(NvmeSQueue *sq, NvmeCmd *cmd)
+{
+    NvmeRequest *req;
+
+    req = QTAILQ_FIRST(&sq->req_list);
+    QTAILQ_REMOVE(&sq->req_list, req, entry);
+    QTAILQ_INSERT_TAIL(&sq->out_req_list, req, entry);
+    memset(&req->cqe, 0, sizeof(req->cqe));
+
+    req->cqe.cid = cmd->cid;
+
+    return req;
+}
+
+static void nvme_process_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
+{
+    uint16_t status;
+    NvmeSQueue *sq = req->sq;
+    NvmeCQueue *cq = n->cq[sq->cqid];
+
+    status = sq->sqid ? nvme_io_cmd(n, cmd, req) :
+        nvme_admin_cmd(n, cmd, req);
+    if (status != NVME_NO_COMPLETE) {
+        req->status = status;
+        nvme_enqueue_req_completion(cq, req);
+    }
+}
+
 static void nvme_process_sq(void *opaque)
 {
     NvmeSQueue *sq = opaque;
     NvmeCtrl *n = sq->ctrl;
-    NvmeCQueue *cq = n->cq[sq->cqid];
+    NvmeRequest *req;
 
-    uint16_t status;
     hwaddr addr;
     NvmeCmd cmd;
-    NvmeRequest *req;
 
     while (!(nvme_sq_empty(sq) || QTAILQ_EMPTY(&sq->req_list))) {
         addr = sq->dma_addr + sq->head * n->sqe_size;
         nvme_addr_read(n, addr, (void *)&cmd, sizeof(cmd));
+
+        req = nvme_get_req(sq, &cmd);
+
         nvme_inc_sq_head(sq);
-
-        req = QTAILQ_FIRST(&sq->req_list);
-        QTAILQ_REMOVE(&sq->req_list, req, entry);
-        QTAILQ_INSERT_TAIL(&sq->out_req_list, req, entry);
-        memset(&req->cqe, 0, sizeof(req->cqe));
-        req->cqe.cid = cmd.cid;
-
-        status = sq->sqid ? nvme_io_cmd(n, &cmd, req) :
-            nvme_admin_cmd(n, &cmd, req);
-        if (status != NVME_NO_COMPLETE) {
-            req->status = status;
-            nvme_enqueue_req_completion(cq, req);
-        }
+        nvme_process_sqe(n, &cmd, req);
     }
 }
 
