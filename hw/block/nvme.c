@@ -1495,7 +1495,7 @@ static struct NvmeRequest *nvme_get_req(NvmeSQueue *sq, NvmeCmd *cmd)
     return req;
 }
 
-static void nvme_process_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
+static uint16_t nvme_process_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
 {
     uint16_t status;
     NvmeSQueue *sq = req->sq;
@@ -1507,6 +1507,8 @@ static void nvme_process_sqe(NvmeCtrl *n, NvmeCmd *cmd, NvmeRequest *req)
         req->status = status;
         nvme_enqueue_req_completion(cq, req);
     }
+
+    return status;
 }
 
 static void nvme_process_sq(void *opaque)
