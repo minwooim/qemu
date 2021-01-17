@@ -320,10 +320,6 @@ int nvme_ns_setup(NvmeCtrl *n, NvmeNamespace *ns, Error **errp)
         nvme_ns_init_zoned(ns, 0);
     }
 
-    if (nvme_register_namespace(n, ns, errp)) {
-        return -1;
-    }
-
     return 0;
 }
 
@@ -361,6 +357,13 @@ static void nvme_ns_realize(DeviceState *dev, Error **errp)
                                 "could not setup namespace: ");
         return;
     }
+
+    if (nvme_register_namespace(n, ns, errp)) {
+        error_propagate_prepend(errp, local_err,
+                                "could not register namespace: ");
+        return;
+    }
+
 }
 
 static Property nvme_ns_props[] = {
