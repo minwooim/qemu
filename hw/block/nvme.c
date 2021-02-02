@@ -4400,11 +4400,36 @@ static int nvme_init_pci(NvmeCtrl *n, PCIDevice *pci_dev, Error **errp)
     return 0;
 }
 
-static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
+static int nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev, Error **errp)
 {
     NvmeIdCtrl *id = &n->id_ctrl;
     uint8_t *pci_conf = pci_dev->config;
     char *subnqn;
+    int fd;
+    char buf[4096];
+
+    /*
+     * If 'id_ctrl' parameter was given, Identify Controller data structure
+     * will be initialized based on the given file.
+     */
+    if (n->params.id_ctrl) {
+        fd = qemu_open(n->params.id_ctrl, O_RDONLY, errp);
+        if (fd < 0) {
+            error_setg(errp, "id_ctrl=%s file not found", n->params.id_ctrl);
+            return -1;
+        }
+
+        if (read(fd, buf, sizeof(buf)) < 0) {
+            error_setg(errp, "read failed from id_ctrl=%s", n->params.id_ctrl);
+            qemu_close(fd);
+            return -1;
+        }
+
+        memcpy(id, buf, sizeof(buf));
+
+        qemu_close(fd);
+        return 0;
+    }
 
     id->vid = cpu_to_le16(pci_get_word(pci_conf + PCI_VENDOR_ID));
     id->ssvid = cpu_to_le16(pci_get_word(pci_conf + PCI_SUBSYSTEM_VENDOR_ID));
@@ -4471,6 +4496,8 @@ static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
 
     n->bar.vs = NVME_SPEC_VER;
     n->bar.intmc = n->bar.intms = 0;
+
+    return 0;
 }
 
 static void nvme_realize(PCIDevice *pci_dev, Error **errp)
@@ -4493,7 +4520,9 @@ static void nvme_realize(PCIDevice *pci_dev, Error **errp)
         return;
     }
 
-    nvme_init_ctrl(n, pci_dev);
+    if (nvme_init_ctrl(n, pci_dev, errp)) {
+        return;
+    }
 
     /* setup a namespace if the controller drive property was given */
     if (n->namespace.blkconf.blk) {
@@ -4553,6 +4582,7 @@ static Property nvme_props[] = {
     DEFINE_PROP_BOOL("legacy-cmb", NvmeCtrl, params.legacy_cmb, false),
     DEFINE_PROP_SIZE32("zoned.append_size_limit", NvmeCtrl, params.zasl_bs,
                        NVME_DEFAULT_MAX_ZA_SIZE),
+    DEFINE_PROP_STRING("id_ctrl", NvmeCtrl, params.id_ctrl),
     DEFINE_PROP_END_OF_LIST(),
 };
 

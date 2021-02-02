@@ -21,6 +21,7 @@ typedef struct NvmeParams {
     bool     use_intel_id;
     uint32_t zasl_bs;
     bool     legacy_cmb;
+    char     *id_ctrl;
 } NvmeParams;
 
 typedef struct NvmeAsyncEvent {
