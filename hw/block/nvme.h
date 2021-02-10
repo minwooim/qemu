@@ -128,6 +128,11 @@ typedef struct NvmeFeatureVal {
     uint8_t     acre;
 } NvmeFeatureVal;
 
+typedef enum NvmeState {
+    NVME_STATE_NORMAL,
+    NVME_STATE_CMD_INTERRUPTED,
+} NvmeState;
+
 typedef struct NvmeCtrl {
     PCIDevice    parent_obj;
     MemoryRegion bar0;
@@ -185,6 +190,8 @@ typedef struct NvmeCtrl {
     NvmeCQueue      admin_cq;
     NvmeIdCtrl      id_ctrl;
     NvmeFeatureVal  features;
+
+    NvmeState       state;
 } NvmeCtrl;
 
 static inline NvmeNamespace *nvme_ns(NvmeCtrl *n, uint32_t nsid)
@@ -212,4 +219,5 @@ static inline NvmeCtrl *nvme_ctrl(NvmeRequest *req)
 
 int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp);
 
+void hmp_nvme_inject_state(Monitor *mon, const QDict *qdict);
 #endif /* HW_NVME_H */

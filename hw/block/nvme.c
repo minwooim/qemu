@@ -123,6 +123,7 @@
 #include "sysemu/sysemu.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
+#include "qapi/qmp/qdict.h"
 #include "sysemu/hostmem.h"
 #include "sysemu/block-backend.h"
 #include "exec/memory.h"
@@ -132,6 +133,7 @@
 #include "trace.h"
 #include "nvme.h"
 #include "nvme-ns.h"
+#include "monitor/monitor.h"
 
 #define NVME_MAX_IOQPAIRS 0xffff
 #define NVME_DB_SIZE  4
@@ -965,6 +967,14 @@ static void nvme_post_cqes(void *opaque)
 static void nvme_enqueue_req_completion(NvmeCQueue *cq, NvmeRequest *req)
 {
     assert(cq->cqid == req->sq->cqid);
+
+    /*
+     * Override request status field if controller state has been injected by
+     * the QMP.
+     */
+    if (cq->ctrl->state == NVME_STATE_CMD_INTERRUPTED) {
+        req->status = NVME_COMMAND_INTERRUPTED;
+    }
 
     if (req->status != NVME_SUCCESS) {
         if (cq->ctrl->features.acre && nvme_should_retry(req)) {
@@ -5023,6 +5033,45 @@ static void nvme_register_types(void)
 {
     type_register_static(&nvme_info);
     type_register_static(&nvme_bus_info);
+}
+
+static void nvme_inject_state(NvmeCtrl *n, NvmeState state)
+{
+    n->state = state;
+}
+
+static const char *nvme_states[] = {
+    [NVME_STATE_NORMAL]             = "normal",
+    [NVME_STATE_CMD_INTERRUPTED]    = "cmd-interrupted",
+};
+
+void hmp_nvme_inject_state(Monitor *mon, const QDict *qdict)
+{
+    const char *id = qdict_get_str(qdict, "id");
+    const char *state = qdict_get_str(qdict, "state");
+    PCIDevice *dev;
+    NvmeCtrl *n;
+    int ret, i;
+
+    ret = pci_qdev_find_device(id, &dev);
+    if (ret < 0) {
+        monitor_printf(mon, "invalid device id %s\n", id);
+        return;
+    }
+
+    n = NVME(dev);
+
+    for (i = 0; i < ARRAY_SIZE(nvme_states); i++) {
+        if (!strcmp(nvme_states[i], state)) {
+            nvme_inject_state(n, i);
+            monitor_printf(mon,
+                           "-device nvme,id=%s: state %s injected\n",
+                           id, state);
+            return;
+        }
+    }
+
+    monitor_printf(mon, "invalid state %s\n", state);
 }
 
 type_init(nvme_register_types)

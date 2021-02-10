@@ -1308,6 +1308,19 @@ SRST
 ERST
 
     {
+        .name       = "nvme_inject_state",
+        .args_type  = "id:s,state:s",
+        .params     = "id [normal|cmd-interrupted]",
+        .help       = "inject controller/namespace state",
+        .cmd        = hmp_nvme_inject_state,
+    },
+
+SRST
+``nvme_inject_state``
+  Inject NVMe controller/namespace state
+ERST
+
+    {
         .name       = "netdev_add",
         .args_type  = "netdev:O",
         .params     = "[user|tap|socket|vde|bridge|hubport|netmap|vhost-user],id=str[,prop=value][,...]",
