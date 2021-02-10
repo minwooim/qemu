@@ -813,6 +813,7 @@ enum NvmeStatusCodes {
     NVME_SGL_DESCR_TYPE_INVALID = 0x0011,
     NVME_INVALID_USE_OF_CMB     = 0x0012,
     NVME_INVALID_PRP_OFFSET     = 0x0013,
+    NVME_COMMAND_INTERRUPTED    = 0x0021,
     NVME_CMD_SET_CMB_REJECTED   = 0x002b,
     NVME_INVALID_CMD_SET        = 0x002c,
     NVME_LBA_RANGE              = 0x0080,
@@ -858,6 +859,7 @@ enum NvmeStatusCodes {
     NVME_DULB                   = 0x0287,
     NVME_MORE                   = 0x2000,
     NVME_DNR                    = 0x4000,
+    NVME_CRD_CRDT1              = 0x0800,
     NVME_NO_COMPLETE            = 0xffff,
 };
 
@@ -987,7 +989,10 @@ typedef struct QEMU_PACKED NvmeIdCtrl {
     uint8_t     rsvd100[11];
     uint8_t     cntrltype;
     uint8_t     fguid[16];
-    uint8_t     rsvd128[128];
+    uint16_t    crdt1;
+    uint16_t    crdt2;
+    uint16_t    crdt3;
+    uint8_t     rsvd134[122];
     uint16_t    oacs;
     uint8_t     acl;
     uint8_t     aerl;
@@ -1131,6 +1136,7 @@ enum NvmeFeatureIds {
     NVME_WRITE_ATOMICITY            = 0xa,
     NVME_ASYNCHRONOUS_EVENT_CONF    = 0xb,
     NVME_TIMESTAMP                  = 0xe,
+    NVME_HOST_BEHAVIOR_SUPPORT      = 0x16,
     NVME_COMMAND_SET_PROFILE        = 0x19,
     NVME_SOFTWARE_PROGRESS_MARKER   = 0x80,
     NVME_FID_MAX                    = 0x100,
@@ -1161,6 +1167,11 @@ typedef enum NvmeGetFeatureSelect {
 #define NVME_SETFEAT_SAVE_MASK  0x1
 #define NVME_SETFEAT_SAVE(dw10) \
     ((dw10 >> NVME_SETFEAT_SAVE_SHIFT) & NVME_SETFEAT_SAVE_MASK)
+
+typedef struct QEMU_PACKED NvmeFeatureHostBehavior {
+    uint8_t     acre;
+    uint8_t     rsvd1[511];
+} NvmeFeatureHostBehavior;
 
 typedef struct QEMU_PACKED NvmeRangeType {
     uint8_t     type;
