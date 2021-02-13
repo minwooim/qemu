@@ -75,6 +75,31 @@ static int nvme_ns_init(NvmeNamespace *ns, Error **errp)
     return 0;
 }
 
+int nvme_ns_post_init(NvmeCtrl *n, NvmeNamespace *ns, Error **errp)
+{
+    NvmeIdNs *id_ns = &ns->id_ns;
+
+    if (n->subsys && !n->subsys->params.ana && ns->params.anagrpid) {
+        error_setg(errp, "anagrpid needs 'ana=true' in nvme subsystem");
+        return -1;
+    }
+
+    if (ns->params.anagrpid && !nvme_ns_shared(ns)) {
+        error_setg(errp, "anagrpid needs nvme-ns device shared");
+        return -1;
+    }
+
+    if (ns->params.anagrpid > n->id_ctrl.anagrpmax) {
+        error_setg(errp,
+                   "anagrpid should be less than %u\n", n->id_ctrl.anagrpmax);
+        return -1;
+    }
+
+    id_ns->anagrpid = ns->params.anagrpid;
+
+    return 0;
+}
+
 static int nvme_ns_init_blk(NvmeNamespace *ns, Error **errp)
 {
     bool read_only;
@@ -417,6 +442,7 @@ static Property nvme_ns_props[] = {
                        params.max_open_zones, 0),
     DEFINE_PROP_UINT32("zoned.descr_ext_size", NvmeNamespace,
                        params.zd_extension_size, 0),
+    DEFINE_PROP_UINT32("ana.grpid", NvmeNamespace, params.anagrpid, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

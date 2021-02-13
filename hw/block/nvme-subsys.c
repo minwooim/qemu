@@ -81,6 +81,11 @@ static void nvme_subsys_realize(DeviceState *dev, Error **errp)
     nvme_subsys_setup(subsys);
 }
 
+static Property nvme_subsys_props[] = {
+    DEFINE_PROP_BOOL("ana", NvmeSubsystem, params.ana, false),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void nvme_subsys_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -89,6 +94,7 @@ static void nvme_subsys_class_init(ObjectClass *oc, void *data)
 
     dc->realize = nvme_subsys_realize;
     dc->desc = "Virtual NVMe subsystem";
+    device_class_set_props(dc, nvme_subsys_props);
 }
 
 static const TypeInfo nvme_subsys_info = {

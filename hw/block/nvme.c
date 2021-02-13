@@ -27,7 +27,8 @@
  *      -device nvme-ns,drive=<drive_id>,bus=<bus_name>,nsid=<nsid>,\
  *              zoned=<true|false[optional]>, \
  *              subsys=<subsys_id>
- *      -device nvme-subsys,id=<subsys_id>
+ *      -device nvme-subsys,id=<subsys_id> \
+ *              ana=<true|false[optional]>
  *
  * Note cmb_size_mb denotes size of CMB in MB. CMB is assumed to be at
  * offset 0 in BAR2 and supports only WDS, RDS and SQS for now. By default, the
@@ -102,6 +103,15 @@
  *
  *     zoned.cross_read=<enable RAZB, default: false>
  *         Setting this property to true enables Read Across Zone Boundaries.
+ *
+ * nvme subsystem device parameters
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ * - `ana`
+ *   Asymmetric Namesapce Accessing(ANA) feature support.  If true, controller
+ *   will support not only ANA log information by Get Log Page and ANA change,
+ *   but event notification to the host.  It requires `nvme-ns` device have
+ *   `anagrpid` parameter specified with a non-zero value.
+ *
  */
 
 #include "qemu/osdep.h"
@@ -217,6 +227,20 @@ static uint16_t nvme_cid(NvmeRequest *req)
 static uint16_t nvme_sqid(NvmeRequest *req)
 {
     return le16_to_cpu(req->sq->sqid);
+}
+
+static inline uint16_t nvme_ana_check_state(uint8_t state)
+{
+    switch (state) {
+    case NVME_ANA_STATE_INACCESSIBLE:
+        return NVME_ANA_INACCESSIBLE;
+    case NVME_ANA_STATE_PERSISTENT_LOSS:
+        return NVME_ANA_PERSISTENT_LOSS;
+    case NVME_ANA_STATE_CHANGE:
+        return NVME_ANA_CHANGE;
+    default:
+        return NVME_SUCCESS;
+    }
 }
 
 static void nvme_assign_zone_state(NvmeNamespace *ns, NvmeZone *zone,
@@ -2672,6 +2696,7 @@ static uint16_t nvme_zone_mgmt_recv(NvmeCtrl *n, NvmeRequest *req)
 static uint16_t nvme_io_cmd(NvmeCtrl *n, NvmeRequest *req)
 {
     uint32_t nsid = le32_to_cpu(req->cmd.nsid);
+    uint16_t status;
 
     trace_pci_nvme_io_cmd(nvme_cid(req), nsid, nvme_sqid(req),
                           req->cmd.opcode, nvme_io_opc_str(req->cmd.opcode));
@@ -2711,6 +2736,13 @@ static uint16_t nvme_io_cmd(NvmeCtrl *n, NvmeRequest *req)
     if (!(req->ns->iocs[req->cmd.opcode] & NVME_CMD_EFF_CSUPP)) {
         trace_pci_nvme_err_invalid_opc(req->cmd.opcode);
         return NVME_INVALID_OPCODE | NVME_DNR;
+    }
+
+    if (req->ns->params.anagrpid) {
+        status = nvme_ana_check_state(n->ana[req->ns->params.anagrpid].state);
+        if (status) {
+            return status;
+        }
     }
 
     switch (req->cmd.opcode) {
@@ -3013,6 +3045,88 @@ static uint16_t nvme_cmd_effects(NvmeCtrl *n, uint8_t csi, uint32_t buf_len,
                     DMA_DIRECTION_FROM_DEVICE, req);
 }
 
+static void nvme_ana_setup_desc(NvmeCtrl *n, NvmeAna *ana,
+                                NvmeAnagrpDesc *desc, bool rgo)
+{
+    uint32_t *nsids = (uint32_t *)(((uint8_t *)desc) + 32);
+    uint32_t nsid;
+    int i = 0;
+
+    desc->grpid = ana->grpid;
+    desc->nr_nsid = nvme_ana_nr_ns(ana);
+    desc->change_count = n->ana_change_count;
+    desc->state = ana->state;
+
+    if (rgo) {
+        return;
+    }
+
+    for (nsid = 1; nsid < NVME_ANA_NSID_BITMAP_SIZE; nsid++) {
+        if (nvme_ana_has_ns(ana, nsid)) {
+            nsids[i++] = nsid;
+        }
+    }
+}
+
+static uint16_t nvme_ana_info(NvmeCtrl *n, uint8_t rae, uint8_t lsp,
+                              uint32_t buf_len, uint64_t off, NvmeRequest *req)
+{
+    NvmeAnaLog *log;
+    NvmeAnagrpDesc *desc;
+    uint8_t rgo = lsp & 1;
+    uint32_t grpid;
+    NvmeAna *ana;
+    uint16_t nr_descs = 0;
+    size_t size, offset;
+    uint16_t status;
+
+    if (!n->subsys) {
+        return NVME_INVALID_FIELD | NVME_DNR;
+    }
+
+    size = sizeof(NvmeAnaLog) +
+            sizeof(NvmeAnagrpDesc) * ARRAY_SIZE(n->ana) +
+            4 * NVME_ANA_NSID_BITMAP_SIZE * ARRAY_SIZE(n->ana);
+    offset = sizeof(NvmeAnaLog);
+
+    log = g_malloc(size);
+
+    for (grpid = 0; grpid < ARRAY_SIZE(n->ana); grpid++) {
+        uint32_t nsid;
+
+        ana = &n->ana[grpid];
+
+        for (nsid = 1; nsid < NVME_ANA_NSID_BITMAP_SIZE; nsid++) {
+            if (nvme_ana_has_ns(ana, nsid) && nvme_ns(n, nsid)) {
+                desc = (NvmeAnagrpDesc *)((void *)log + offset);
+
+                offset += sizeof(NvmeAnagrpDesc);
+                if (!rgo) {
+                    offset += 4 * nvme_ana_nr_ns(ana);
+                }
+
+                nvme_ana_setup_desc(n, ana, desc, rgo);
+                nr_descs++;
+                break;
+            }
+        }
+    }
+
+    log->change_count = n->ana_change_count;
+    log->nr_anagrp_desc = nr_descs;
+
+    if (!rae) {
+        nvme_clear_events(n, NVME_AER_TYPE_NOTICE);
+    }
+
+    status = nvme_dma(n, ((uint8_t *)log) + off, MIN(size - off, buf_len),
+                      DMA_DIRECTION_FROM_DEVICE, req);
+
+    g_free(log);
+
+    return status;
+}
+
 static uint16_t nvme_get_log(NvmeCtrl *n, NvmeRequest *req)
 {
     NvmeCmd *cmd = &req->cmd;
@@ -3059,6 +3173,8 @@ static uint16_t nvme_get_log(NvmeCtrl *n, NvmeRequest *req)
         return nvme_fw_log_info(n, len, off, req);
     case NVME_LOG_CMD_EFFECTS:
         return nvme_cmd_effects(n, csi, len, off, req);
+    case NVME_LOG_ANA:
+        return nvme_ana_info(n, rae, lsp, len, off, req);
     default:
         trace_pci_nvme_err_invalid_log_page(nvme_cid(req), lid);
         return NVME_INVALID_FIELD | NVME_DNR;
@@ -4623,6 +4739,8 @@ static void nvme_check_constraints(NvmeCtrl *n, Error **errp)
 
 static void nvme_init_state(NvmeCtrl *n)
 {
+    uint32_t anagrpid;
+
     n->num_namespaces = NVME_MAX_NAMESPACES;
     /* add one to max_ioqpairs to account for the admin queue pair */
     n->reg_size = pow2ceil(sizeof(NvmeBar) +
@@ -4633,11 +4751,17 @@ static void nvme_init_state(NvmeCtrl *n)
     n->features.temp_thresh_hi = NVME_TEMPERATURE_WARNING;
     n->starttime_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     n->aer_reqs = g_new0(NvmeRequest *, n->params.aerl + 1);
+
+    for (anagrpid = 1; anagrpid < ARRAY_SIZE(n->ana); anagrpid++) {
+        n->ana[anagrpid].grpid = anagrpid;
+        n->ana[anagrpid].state = NVME_ANA_STATE_OPTIMIZED;
+    }
 }
 
 int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp)
 {
     uint32_t nsid = nvme_nsid(ns);
+    NvmeAna *ana;
 
     if (nsid > NVME_MAX_NAMESPACES) {
         error_setg(errp, "invalid namespace id (must be between 0 and %d)",
@@ -4664,9 +4788,19 @@ int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp)
         }
     }
 
+    if (nvme_ns_post_init(n, ns, errp)) {
+        return -1;
+    }
+
     trace_pci_nvme_register_namespace(nsid);
 
     n->namespaces[nsid - 1] = ns;
+
+    if (ns->params.anagrpid) {
+        ana = &n->ana[ns->params.anagrpid];
+
+        nvme_ana_register_ns(ana, nvme_nsid(ns));
+    }
 
     return 0;
 }
@@ -4864,6 +4998,17 @@ static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
 
     if (n->subsys) {
         id->cmic |= NVME_CMIC_MULTI_CTRL;
+    }
+
+    if (n->subsys && n->subsys->params.ana) {
+        id->oaes |= NVME_OAES_ANA;
+        id->cmic |= NVME_CMIC_ANA;
+
+        id->anacap = NVME_ANACAP_ANA_OPTIMIZED |
+            NVME_ANACAP_ANA_INACCESSIBLE |
+            NVME_ANACAP_ANA_CHANGE;
+        id->anagrpmax = NVME_MAX_ANA_GROUP;
+        id->nanagrpid = NVME_MAX_ANA_GROUP;
     }
 
     NVME_CAP_SET_MQES(n->bar.cap, 0x7ff);

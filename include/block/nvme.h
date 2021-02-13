@@ -759,6 +759,7 @@ typedef struct QEMU_PACKED NvmeCopySourceRange {
 enum NvmeAsyncEventRequest {
     NVME_AER_TYPE_ERROR                     = 0,
     NVME_AER_TYPE_SMART                     = 1,
+    NVME_AER_TYPE_NOTICE                    = 2,
     NVME_AER_TYPE_IO_SPECIFIC               = 6,
     NVME_AER_TYPE_VENDOR_SPECIFIC           = 7,
     NVME_AER_INFO_ERR_INVALID_DB_REGISTER   = 0,
@@ -856,6 +857,9 @@ enum NvmeStatusCodes {
     NVME_CMP_FAILURE            = 0x0285,
     NVME_ACCESS_DENIED          = 0x0286,
     NVME_DULB                   = 0x0287,
+    NVME_ANA_PERSISTENT_LOSS    = 0x0301,
+    NVME_ANA_INACCESSIBLE       = 0x0302,
+    NVME_ANA_CHANGE             = 0x0303,
     NVME_MORE                   = 0x2000,
     NVME_DNR                    = 0x4000,
     NVME_NO_COMPLETE            = 0xffff,
@@ -922,6 +926,28 @@ typedef struct NvmeEffectsLog {
     uint8_t     resv[2048];
 } NvmeEffectsLog;
 
+enum NvmeAnaState {
+    NVME_ANA_STATE_OPTIMIZED        = 0x1,
+    NVME_ANA_STATE_NON_OPTIMIZED    = 0x2,
+    NVME_ANA_STATE_INACCESSIBLE     = 0x3,
+    NVME_ANA_STATE_PERSISTENT_LOSS  = 0x4,
+    NVME_ANA_STATE_CHANGE           = 0xf,
+};
+
+typedef struct NvmeAnagrpDesc {
+    uint32_t    grpid;
+    uint32_t    nr_nsid;
+    uint64_t    change_count;
+    uint8_t     state;
+    uint8_t     rsvd17[15];
+} NvmeAnagrpDesc;
+
+typedef struct NvmeAnaLog {
+    uint64_t    change_count;
+    uint16_t    nr_anagrp_desc;
+    uint8_t     rsvd10[6];
+} NvmeAnaLog;
+
 enum {
     NVME_CMD_EFF_CSUPP      = 1 << 0,
     NVME_CMD_EFF_LBCC       = 1 << 1,
@@ -937,6 +963,7 @@ enum NvmeLogIdentifier {
     NVME_LOG_SMART_INFO     = 0x02,
     NVME_LOG_FW_SLOT_INFO   = 0x03,
     NVME_LOG_CMD_EFFECTS    = 0x05,
+    NVME_LOG_ANA            = 0x0C,
 };
 
 typedef struct QEMU_PACKED NvmePSD {
@@ -1013,7 +1040,11 @@ typedef struct QEMU_PACKED NvmeIdCtrl {
     uint16_t    mntmt;
     uint16_t    mxtmt;
     uint32_t    sanicap;
-    uint8_t     rsvd332[180];
+    uint8_t     rsvd332[11];
+    uint8_t     anacap;
+    uint32_t    anagrpmax;
+    uint32_t    nanagrpid;
+    uint8_t     rsvd352[160];
     uint8_t     sqes;
     uint8_t     cqes;
     uint16_t    maxcmd;
@@ -1045,6 +1076,10 @@ enum NvmeIdCtrlOacs {
     NVME_OACS_SECURITY  = 1 << 0,
     NVME_OACS_FORMAT    = 1 << 1,
     NVME_OACS_FW        = 1 << 2,
+};
+
+enum NvmeIdCtrlOaes {
+    NVME_OAES_ANA       = 1 << 11,
 };
 
 enum NvmeIdCtrlOncs {
@@ -1082,6 +1117,15 @@ enum NvmeIdCtrlLpa {
 
 enum NvmeIdCtrlCmic {
     NVME_CMIC_MULTI_CTRL    = 1 << 1,
+    NVME_CMIC_ANA           = 1 << 3,
+};
+
+enum NvmeIdCtrlAnacap {
+    NVME_ANACAP_ANA_OPTIMIZED       = 1 << 0,
+    NVME_ANACAP_ANA_NON_OPTIMIZED   = 1 << 1,
+    NVME_ANACAP_ANA_INACCESSIBLE    = 1 << 2,
+    NVME_ANACAP_ANA_PERSISTENT_LOSS = 1 << 3,
+    NVME_ANACAP_ANA_CHANGE          = 1 << 4,
 };
 
 #define NVME_CTRL_SQES_MIN(sqes) ((sqes) & 0xf)
@@ -1224,7 +1268,9 @@ typedef struct QEMU_PACKED NvmeIdNs {
     uint16_t    mssrl;
     uint32_t    mcl;
     uint8_t     msrc;
-    uint8_t     rsvd81[23];
+    uint8_t     rsvd81[11];
+    uint32_t    anagrpid;
+    uint8_t     rsvd96[8];
     uint8_t     nguid[16];
     uint64_t    eui64;
     NvmeLBAF    lbaf[16];

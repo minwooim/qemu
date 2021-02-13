@@ -16,6 +16,10 @@
 #define NVME_SUBSYS_MAX_CTRLS   32
 #define NVME_SUBSYS_MAX_NAMESPACES  32
 
+typedef struct NvmeSubsystemParams {
+    bool     ana;
+} NvmeSubsystemParams;
+
 typedef struct NvmeCtrl NvmeCtrl;
 typedef struct NvmeNamespace NvmeNamespace;
 typedef struct NvmeSubsystem {
@@ -24,6 +28,8 @@ typedef struct NvmeSubsystem {
 
     NvmeCtrl    *ctrls[NVME_SUBSYS_MAX_CTRLS];
     NvmeNamespace *namespaces[NVME_SUBSYS_MAX_NAMESPACES];
+
+    NvmeSubsystemParams params;
 } NvmeSubsystem;
 
 int nvme_subsys_register_ctrl(NvmeCtrl *n, Error **errp);

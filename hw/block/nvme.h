@@ -126,6 +126,24 @@ typedef struct NvmeFeatureVal {
     uint32_t    async_config;
 } NvmeFeatureVal;
 
+typedef struct NvmeAna {
+    uint32_t        grpid;
+    uint8_t         state;
+#define NVME_MAX_ANA_GROUP          (NVME_MAX_NAMESPACES)
+#define NVME_ANA_NSID_BITMAP_SIZE   (NVME_MAX_ANA_GROUP + 1)
+    DECLARE_BITMAP(nsids, NVME_ANA_NSID_BITMAP_SIZE);
+} NvmeAna;
+
+static inline void nvme_ana_register_ns(NvmeAna *ana, uint32_t nsid)
+{
+    set_bit(nsid, ana->nsids);
+}
+
+static inline bool nvme_ana_has_ns(NvmeAna *ana, uint32_t nsid)
+{
+    return test_bit(nsid, ana->nsids);
+}
+
 typedef struct NvmeCtrl {
     PCIDevice    parent_obj;
     MemoryRegion bar0;
@@ -174,6 +192,8 @@ typedef struct NvmeCtrl {
     uint8_t     zasl;
 
     NvmeSubsystem   *subsys;
+    NvmeAna         ana[NVME_MAX_NAMESPACES + 1];
+    uint64_t        ana_change_count;
 
     NvmeNamespace   namespace;
     NvmeNamespace   *namespaces[NVME_MAX_NAMESPACES];
@@ -206,6 +226,11 @@ static inline NvmeCtrl *nvme_ctrl(NvmeRequest *req)
 {
     NvmeSQueue *sq = req->sq;
     return sq->ctrl;
+}
+
+static inline long nvme_ana_nr_ns(NvmeAna *ana)
+{
+    return bitmap_count_one(ana->nsids, NVME_ANA_NSID_BITMAP_SIZE);
 }
 
 int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp);
