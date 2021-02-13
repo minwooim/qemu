@@ -46,6 +46,7 @@ int nvme_subsys_register_ctrl(NvmeCtrl *n, Error **errp)
 int nvme_subsys_register_ns(NvmeNamespace *ns, Error **errp)
 {
     NvmeSubsystem *subsys = ns->subsys;
+    NvmeAna *ana;
     NvmeCtrl *n;
     int i;
 
@@ -65,13 +66,27 @@ int nvme_subsys_register_ns(NvmeNamespace *ns, Error **errp)
         }
     }
 
+    if (ns->params.anagrpid) {
+        ana = &subsys->ana[ns->params.anagrpid];
+
+        nvme_subsys_ana_register_ns(ana, nvme_nsid(ns));
+        ns->ana = ana;
+    }
+
     return 0;
 }
 
 static void nvme_subsys_setup(NvmeSubsystem *subsys)
 {
+    uint32_t anagrpid;
+
     snprintf((char *)subsys->subnqn, sizeof(subsys->subnqn),
              "nqn.2019-08.org.qemu:%s", subsys->parent_obj.id);
+
+    for (anagrpid = 1; anagrpid < ARRAY_SIZE(subsys->ana); anagrpid++) {
+        subsys->ana[anagrpid].grpid = anagrpid;
+        subsys->ana[anagrpid].state = NVME_ANA_STATE_OPTIMIZED;
+    }
 }
 
 static void nvme_subsys_realize(DeviceState *dev, Error **errp)
@@ -81,6 +96,11 @@ static void nvme_subsys_realize(DeviceState *dev, Error **errp)
     nvme_subsys_setup(subsys);
 }
 
+static Property nvme_subsys_props[] = {
+    DEFINE_PROP_BOOL("ana", NvmeSubsystem, params.ana, false),
+    DEFINE_PROP_END_OF_LIST(),
+};
+
 static void nvme_subsys_class_init(ObjectClass *oc, void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -89,6 +109,7 @@ static void nvme_subsys_class_init(ObjectClass *oc, void *data)
 
     dc->realize = nvme_subsys_realize;
     dc->desc = "Virtual NVMe subsystem";
+    device_class_set_props(dc, nvme_subsys_props);
 }
 
 static const TypeInfo nvme_subsys_info = {

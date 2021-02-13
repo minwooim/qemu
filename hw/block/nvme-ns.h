@@ -40,6 +40,7 @@ typedef struct NvmeNamespaceParams {
     uint32_t max_active_zones;
     uint32_t max_open_zones;
     uint32_t zd_extension_size;
+    uint32_t anagrpid;
 } NvmeNamespaceParams;
 
 typedef struct NvmeNamespace {
@@ -52,6 +53,7 @@ typedef struct NvmeNamespace {
     uint8_t      csi;
 
     NvmeSubsystem   *subsys;
+    NvmeAna         *ana;
 
     NvmeIdNsZoned   *id_ns_zoned;
     NvmeZone        *zone_array;
@@ -185,6 +187,7 @@ static inline void nvme_aor_dec_active(NvmeNamespace *ns)
     assert(ns->nr_active_zones >= 0);
 }
 
+int nvme_ns_post_init(NvmeCtrl *n, NvmeNamespace *ns, Error **errp);
 int nvme_ns_setup(NvmeNamespace *ns, Error **errp);
 void nvme_ns_drain(NvmeNamespace *ns);
 void nvme_ns_shutdown(NvmeNamespace *ns);
