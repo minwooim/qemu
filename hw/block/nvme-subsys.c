@@ -12,15 +12,83 @@
 #include "qemu/iov.h"
 #include "qemu/cutils.h"
 #include "qapi/error.h"
+#include "qapi/qmp/qdict.h"
 #include "hw/qdev-properties.h"
 #include "hw/qdev-core.h"
 #include "hw/block/block.h"
 #include "block/aio.h"
 #include "block/accounting.h"
 #include "sysemu/sysemu.h"
+#include "monitor/monitor.h"
 #include "hw/pci/pci.h"
 #include "nvme.h"
 #include "nvme-subsys.h"
+
+static void nvme_subsys_ana_state_change(NvmeSubsystem *subsys,
+                                         uint32_t grpid, uint8_t state)
+{
+    uint16_t cntlid;
+    uint8_t old;
+
+    old = subsys->ana[grpid].state;
+
+    if (state == old) {
+        return;
+    }
+
+    subsys->ana[grpid].state = state;
+
+    for (cntlid = 0; cntlid < ARRAY_SIZE(subsys->ctrls); cntlid++) {
+        if (!subsys->ctrls[cntlid]) {
+            continue;
+        }
+
+        nvme_notice_event(subsys->ctrls[cntlid], NVME_AER_INFO_ANA_CHANGE);
+    }
+}
+
+static const char *nvme_subsys_ana_states[] = {
+    "",
+    [NVME_ANA_STATE_OPTIMIZED]      = "optimized",
+    [NVME_ANA_STATE_NON_OPTIMIZED]  = "non-optimized",
+    [NVME_ANA_STATE_INACCESSIBLE]   = "inaccessible",
+    [NVME_ANA_STATE_CHANGE]         = "change",
+};
+
+void hmp_nvme_ana_inject_state(Monitor *mon, const QDict *qdict)
+{
+    const char *id = qdict_get_str(qdict, "id");
+    const uint32_t grpid = qdict_get_int(qdict, "grpid");
+    const char *state = qdict_get_str(qdict, "state");
+    NvmeSubsystem *subsys;
+    DeviceState *dev;
+    int i;
+
+    dev = qdev_find_recursive(sysbus_get_default(), id);
+    if (!dev) {
+        monitor_printf(mon, "nvme-subsys(%s): invalid device id\n", id);
+        return;
+    }
+
+    if (!grpid) {
+        monitor_printf(mon, "nvme-subsys(%s): grpid should not be 0\n", id);
+        return;
+    }
+
+    subsys = NVME_SUBSYS(dev);
+
+    for (i = 0; i < ARRAY_SIZE(nvme_subsys_ana_states); i++) {
+        if (!strcmp(nvme_subsys_ana_states[i], state)) {
+            nvme_subsys_ana_state_change(subsys, grpid, i);
+            monitor_printf(mon,
+                           "nvme-subsys(%s): ANA state %s(%d) injected\n",
+                           id, state, i);
+            return;
+        }
+    }
+
+    monitor_printf(mon, "nvme-subsys(%s): invalid state %s\n", id, state);
+}
 
 int nvme_subsys_register_ctrl(NvmeCtrl *n, Error **errp)
 {
@@ -107,6 +175,7 @@ static void nvme_subsys_class_init(ObjectClass *oc, void *data)
 
     set_bit(DEVICE_CATEGORY_STORAGE, dc->categories);
 
+    dc->bus_type = TYPE_BUS;
     dc->realize = nvme_subsys_realize;
     dc->desc = "Virtual NVMe subsystem";
     device_class_set_props(dc, nvme_subsys_props);

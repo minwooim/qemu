@@ -60,5 +60,6 @@ static inline long nvme_subsys_ana_nr_ns(NvmeAna *ana)
 
 int nvme_subsys_register_ctrl(NvmeCtrl *n, Error **errp);
 int nvme_subsys_register_ns(NvmeNamespace *ns, Error **errp);
+void hmp_nvme_ana_inject_state(Monitor *mon, const QDict *qdict);
 
 #endif /* NVME_SUBSYS_H */

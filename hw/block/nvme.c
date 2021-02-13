@@ -1056,6 +1056,21 @@ static void nvme_smart_event(NvmeCtrl *n, uint8_t event)
     nvme_enqueue_event(n, NVME_AER_TYPE_SMART, aer_info, NVME_LOG_SMART_INFO);
 }
 
+void nvme_notice_event(NvmeCtrl *n, uint8_t event_info)
+{
+    uint8_t log_page;
+
+    switch (event_info) {
+    case NVME_AER_INFO_ANA_CHANGE:
+        log_page = NVME_LOG_ANA;
+        break;
+    default:
+        return;
+    }
+
+    nvme_enqueue_event(n, NVME_AER_TYPE_NOTICE, event_info, log_page);
+}
+
 static void nvme_clear_events(NvmeCtrl *n, uint8_t event_type)
 {
     n->aer_mask &= ~(1 << event_type);

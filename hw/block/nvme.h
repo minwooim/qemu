@@ -209,5 +209,6 @@ static inline NvmeCtrl *nvme_ctrl(NvmeRequest *req)
 }
 
 int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp);
+void nvme_notice_event(NvmeCtrl *n, uint8_t event_info);
 
 #endif /* HW_NVME_H */
