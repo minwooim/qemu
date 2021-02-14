@@ -234,5 +234,6 @@ static inline long nvme_ana_nr_ns(NvmeAna *ana)
 }
 
 int nvme_register_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp);
+void hmp_nvme_ana_inject_state(Monitor *mon, const QDict *qdict);
 
 #endif /* HW_NVME_H */

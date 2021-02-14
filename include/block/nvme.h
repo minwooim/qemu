@@ -771,6 +771,7 @@ enum NvmeAsyncEventRequest {
     NVME_AER_INFO_SMART_RELIABILITY         = 0,
     NVME_AER_INFO_SMART_TEMP_THRESH         = 1,
     NVME_AER_INFO_SMART_SPARE_THRESH        = 2,
+    NVME_AER_INFO_ANA_CHANGE                = 3,
 };
 
 typedef struct QEMU_PACKED NvmeAerResult {

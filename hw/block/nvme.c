@@ -131,6 +131,8 @@
 #include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/cutils.h"
+#include "qapi/qmp/qdict.h"
+#include "monitor/monitor.h"
 #include "trace.h"
 #include "nvme.h"
 #include "nvme-ns.h"
@@ -229,6 +231,46 @@ static uint16_t nvme_sqid(NvmeRequest *req)
     return le16_to_cpu(req->sq->sqid);
 }
 
+static void nvme_notice_event(NvmeCtrl *n, uint8_t event_info);
+static bool nvme_ana_state_change(NvmeCtrl *n, uint32_t grpid, uint8_t state)
+{
+    uint8_t old;
+
+    old = n->ana[grpid].state;
+
+    if (state == old) {
+        return false;
+    }
+
+    n->ana[grpid].state = state;
+    n->ana_change_count++;
+    nvme_notice_event(n, NVME_AER_INFO_ANA_CHANGE);
+
+    return true;
+}
+
+static const char *nvme_ana_states[] = {
+    [NVME_ANA_STATE_OPTIMIZED]      = "optimized",
+    [NVME_ANA_STATE_NON_OPTIMIZED]  = "non-optimized",
+    [NVME_ANA_STATE_INACCESSIBLE]   = "inaccessible",
+    [NVME_ANA_STATE_PERSISTENT_LOSS]= "persistent-loss",
+    [NVME_ANA_STATE_CHANGE]         = "change",
+};
+
+static inline bool nvme_ana_state_valid(uint8_t state)
+{
+    switch (state) {
+    case NVME_ANA_STATE_OPTIMIZED:
+    case NVME_ANA_STATE_NON_OPTIMIZED:
+    case NVME_ANA_STATE_INACCESSIBLE:
+    case NVME_ANA_STATE_PERSISTENT_LOSS:
+    case NVME_ANA_STATE_CHANGE:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static inline uint16_t nvme_ana_check_state(uint8_t state)
 {
     switch (state) {
@@ -241,6 +283,42 @@ static inline uint16_t nvme_ana_check_state(uint8_t state)
     default:
         return NVME_SUCCESS;
     }
+}
+
+void hmp_nvme_ana_inject_state(Monitor *mon, const QDict *qdict)
+{
+    const char *id = qdict_get_str(qdict, "id");
+    const uint32_t grpid = qdict_get_int(qdict, "grpid");
+    const char *state = qdict_get_str(qdict, "state");
+    NvmeCtrl *n;
+    DeviceState *dev;
+    int i;
+
+    dev = qdev_find_recursive(sysbus_get_default(), id);
+    if (!dev) {
+        monitor_printf(mon, "%s: invalid device id\n", id);
+        return;
+    }
+
+    if (!grpid) {
+        monitor_printf(mon, "%s: grpid should not be 0\n", id);
+        return;
+    }
+
+    n = NVME(dev);
+
+    for (i = 0; i < ARRAY_SIZE(nvme_ana_states); i++) {
+        if (nvme_ana_state_valid(i) &&
+                !strcmp(nvme_ana_states[i], state)) {
+            if (nvme_ana_state_change(n, grpid, i)) {
+                monitor_printf(mon, "%s: ANA state %s(%d) injected\n",
+                               id, state, i);
+            }
+            return;
+        }
+    }
+
+    monitor_printf(mon, "%s: invalid state %s\n", id, state);
 }
 
 static void nvme_assign_zone_state(NvmeNamespace *ns, NvmeZone *zone,
@@ -1078,6 +1156,21 @@ static void nvme_smart_event(NvmeCtrl *n, uint8_t event)
     }
 
     nvme_enqueue_event(n, NVME_AER_TYPE_SMART, aer_info, NVME_LOG_SMART_INFO);
+}
+
+static void nvme_notice_event(NvmeCtrl *n, uint8_t event_info)
+{
+    uint8_t log_page;
+
+    switch (event_info) {
+    case NVME_AER_INFO_ANA_CHANGE:
+        log_page = NVME_LOG_ANA;
+        break;
+    default:
+        return;
+    }
+
+    nvme_enqueue_event(n, NVME_AER_TYPE_NOTICE, event_info, log_page);
 }
 
 static void nvme_clear_events(NvmeCtrl *n, uint8_t event_type)
