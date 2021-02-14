@@ -23,7 +23,7 @@
  *              max_ioqpairs=<N[optional]>, \
  *              aerl=<N[optional]>, aer_max_queued=<N[optional]>, \
  *              mdts=<N[optional]>,zoned.append_size_limit=<N[optional]>, \
- *              subsys=<subsys_id> \
+ *              subsys=<subsys_id>,cmd-retry-delay=<N[optional]> \
  *      -device nvme-ns,drive=<drive_id>,bus=<bus_name>,nsid=<nsid>,\
  *              zoned=<true|false[optional]>, \
  *              subsys=<subsys_id>
@@ -70,6 +70,14 @@
  *   to this property may be rounded down and result in a lower maximum ZA
  *   data size being in effect. By setting this property to 0, users can make
  *   ZASL to be equal to MDTS. This property only affects zoned namespaces.
+ *
+ * - `cmd-retry-delay`
+ *   Command Retry Delay value in unit of millisecond.  This value will be
+ *   reported to the CRDT1(Command Retry Delay Time 1) in Identify Controller
+ *   data structure in 100 milliseconds unit.  If this is not given, DNR(Do Not
+ *   Retry) bit field in the Status field of CQ entry.  If it's given to 0,
+ *   CRD(Command Retry Delay) will be set to 0 which is for retry without
+ *   delay.  Otherwise, it will set to 1 to delay for CRDT1 value.
  *
  * nvme namespace device parameters
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -154,6 +162,7 @@ static const bool nvme_feature_support[NVME_FID_MAX] = {
     [NVME_WRITE_ATOMICITY]          = true,
     [NVME_ASYNCHRONOUS_EVENT_CONF]  = true,
     [NVME_TIMESTAMP]                = true,
+    [NVME_HOST_BEHAVIOR_SUPPORT]    = true,
 };
 
 static const uint32_t nvme_feature_cap[NVME_FID_MAX] = {
@@ -163,6 +172,7 @@ static const uint32_t nvme_feature_cap[NVME_FID_MAX] = {
     [NVME_NUMBER_OF_QUEUES]         = NVME_FEAT_CAP_CHANGE,
     [NVME_ASYNCHRONOUS_EVENT_CONF]  = NVME_FEAT_CAP_CHANGE,
     [NVME_TIMESTAMP]                = NVME_FEAT_CAP_CHANGE,
+    [NVME_HOST_BEHAVIOR_SUPPORT]    = NVME_FEAT_CAP_CHANGE,
 };
 
 static const uint32_t nvme_cse_acs[256] = {
@@ -942,9 +952,30 @@ static void nvme_post_cqes(void *opaque)
     }
 }
 
+static void nvme_setup_crdt(NvmeCtrl *n, NvmeRequest *req)
+{
+    if (!n->features.acre) {
+        return;
+    }
+
+    /*
+     * We just support CRDT1 for now without considering CRDT2 and CRDT3.
+     * Also, regardless to the status code, if there's no NVME_DNR, then we
+     * set up the command retry delay.
+     */
+    if (req->status && !(req->status & NVME_DNR)) {
+        if (n->params.cmd_retry_delay) {
+            req->status |= NVME_CRD_CRDT1;
+        }
+    }
+}
+
 static void nvme_enqueue_req_completion(NvmeCQueue *cq, NvmeRequest *req)
 {
     assert(cq->cqid == req->sq->cqid);
+
+    nvme_setup_crdt(cq->ctrl, req);
+
     trace_pci_nvme_enqueue_req_completion(nvme_cid(req), cq->cqid,
                                           req->status);
 
@@ -3501,6 +3532,16 @@ static uint16_t nvme_get_feature_timestamp(NvmeCtrl *n, NvmeRequest *req)
                     DMA_DIRECTION_FROM_DEVICE, req);
 }
 
+static uint16_t nvme_get_feature_host_behavior(NvmeCtrl *n, NvmeRequest *req)
+{
+    NvmeFeatureHostBehavior data = {};
+
+    data.acre = n->features.acre;
+
+    return nvme_dma(n, (uint8_t *)&data, sizeof(data),
+                    DMA_DIRECTION_FROM_DEVICE, req);
+}
+
 static uint16_t nvme_get_feature(NvmeCtrl *n, NvmeRequest *req)
 {
     NvmeCmd *cmd = &req->cmd;
@@ -3607,6 +3648,8 @@ static uint16_t nvme_get_feature(NvmeCtrl *n, NvmeRequest *req)
         goto out;
     case NVME_TIMESTAMP:
         return nvme_get_feature_timestamp(n, req);
+    case NVME_HOST_BEHAVIOR_SUPPORT:
+        return nvme_get_feature_host_behavior(n, req);
     default:
         break;
     }
@@ -3666,6 +3709,22 @@ static uint16_t nvme_set_feature_timestamp(NvmeCtrl *n, NvmeRequest *req)
     }
 
     nvme_set_timestamp(n, timestamp);
+
+    return NVME_SUCCESS;
+}
+
+static uint16_t nvme_set_feature_host_behavior(NvmeCtrl *n, NvmeRequest *req)
+{
+    NvmeFeatureHostBehavior data;
+    int ret;
+
+    ret = nvme_dma(n, (uint8_t *)&data, sizeof(data),
+                   DMA_DIRECTION_TO_DEVICE, req);
+    if (ret) {
+        return ret;
+    }
+
+    n->features.acre = data.acre;
 
     return NVME_SUCCESS;
 }
@@ -3801,6 +3860,8 @@ static uint16_t nvme_set_feature(NvmeCtrl *n, NvmeRequest *req)
         break;
     case NVME_TIMESTAMP:
         return nvme_set_feature_timestamp(n, req);
+    case NVME_HOST_BEHAVIOR_SUPPORT:
+        return nvme_set_feature_host_behavior(n, req);
     case NVME_COMMAND_SET_PROFILE:
         if (dw11 & 0x1ff) {
             trace_pci_nvme_err_invalid_iocsci(dw11 & 0x1ff);
@@ -4816,6 +4877,10 @@ static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
     id->oacs = cpu_to_le16(0);
     id->cntrltype = 0x1;
 
+    if (n->params.cmd_retry_delay) {
+        id->crdt1 = cpu_to_le16(DIV_ROUND_UP(n->params.cmd_retry_delay, 100));
+    }
+
     /*
      * Because the controller always completes the Abort command immediately,
      * there can never be more than one concurrently executing Abort command,
@@ -4988,6 +5053,7 @@ static Property nvme_props[] = {
     DEFINE_PROP_BOOL("legacy-cmb", NvmeCtrl, params.legacy_cmb, false),
     DEFINE_PROP_SIZE32("zoned.append_size_limit", NvmeCtrl, params.zasl_bs,
                        NVME_DEFAULT_MAX_ZA_SIZE),
+    DEFINE_PROP_UINT32("cmd-retry-delay", NvmeCtrl, params.cmd_retry_delay, 0),
     DEFINE_PROP_END_OF_LIST(),
 };
 

@@ -22,6 +22,7 @@ typedef struct NvmeParams {
     bool     use_intel_id;
     uint32_t zasl_bs;
     bool     legacy_cmb;
+    uint32_t cmd_retry_delay;
 } NvmeParams;
 
 typedef struct NvmeAsyncEvent {
@@ -124,6 +125,7 @@ typedef struct NvmeFeatureVal {
         uint16_t temp_thresh_low;
     };
     uint32_t    async_config;
+    uint8_t     acre;
 } NvmeFeatureVal;
 
 typedef struct NvmeCtrl {
