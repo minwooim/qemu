@@ -2980,6 +2980,32 @@ static uint16_t nvme_error_info(NvmeCtrl *n, uint8_t rae, uint32_t buf_len,
                     DMA_DIRECTION_FROM_DEVICE, req);
 }
 
+static uint16_t nvme_changed_nslist(NvmeCtrl *n, uint8_t rae, uint32_t buf_len,
+                                    uint64_t off, NvmeRequest *req)
+{
+    uint32_t nslist[1024];
+    uint32_t trans_len;
+    NvmeChangedNs *ns, *next;
+    int i = 0;
+
+    memset(nslist, 0x0, sizeof(nslist));
+    trans_len = MIN(sizeof(nslist) - off, buf_len);
+
+    QTAILQ_FOREACH_SAFE(ns, &n->changed_ns_list, entry, next) {
+        nslist[i++] = ns->nsid;
+
+        QTAILQ_REMOVE(&n->changed_ns_list, ns, entry);
+        g_free(ns);
+    }
+
+    if (!rae) {
+        nvme_clear_events(n, NVME_AER_TYPE_NOTICE);
+    }
+
+    return nvme_dma(n, ((uint8_t *)nslist) + off, trans_len,
+                    DMA_DIRECTION_FROM_DEVICE, req);
+}
+
 static uint16_t nvme_cmd_effects(NvmeCtrl *n, uint8_t csi, uint32_t buf_len,
                                  uint64_t off, NvmeRequest *req)
 {
@@ -3064,6 +3090,8 @@ static uint16_t nvme_get_log(NvmeCtrl *n, NvmeRequest *req)
         return nvme_smart_info(n, rae, len, off, req);
     case NVME_LOG_FW_SLOT_INFO:
         return nvme_fw_log_info(n, len, off, req);
+    case NVME_LOG_CHANGED_NSLIST:
+        return nvme_changed_nslist(n, rae, len, off, req);
     case NVME_LOG_CMD_EFFECTS:
         return nvme_cmd_effects(n, csi, len, off, req);
     default:
@@ -3882,6 +3910,7 @@ static uint16_t nvme_ns_attachment(NvmeCtrl *n, NvmeRequest *req)
     uint16_t *ids = &list[1];
     uint16_t ret;
     int i;
+    NvmeChangedNs *changed_nsid;
 
     trace_pci_nvme_ns_attachment(nvme_cid(req), dw10 & 0xf);
 
@@ -3920,6 +3949,18 @@ static uint16_t nvme_ns_attachment(NvmeCtrl *n, NvmeRequest *req)
 
             nvme_ns_detach(ctrl, ns);
         }
+
+        /*
+         * Add namespace id to the changed namespace id list for event clearing
+         * via Get Log Page command.
+         */
+        changed_nsid = g_new(NvmeChangedNs, 1);
+        changed_nsid->nsid = nsid;
+        QTAILQ_INSERT_TAIL(&ctrl->changed_ns_list, changed_nsid, entry);
+
+        nvme_enqueue_event(ctrl, NVME_AER_TYPE_NOTICE,
+                           NVME_AER_INFO_NOTICE_NS_ATTR_CHANGED,
+                           NVME_LOG_CHANGED_NSLIST);
     }
 
     return NVME_SUCCESS;
@@ -4714,6 +4755,7 @@ static void nvme_init_state(NvmeCtrl *n)
     n->features.temp_thresh_hi = NVME_TEMPERATURE_WARNING;
     n->starttime_ms = qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
     n->aer_reqs = g_new0(NvmeRequest *, n->params.aerl + 1);
+    QTAILQ_INIT(&n->changed_ns_list);
 }
 
 static int nvme_attach_namespace(NvmeCtrl *n, NvmeNamespace *ns, Error **errp)
@@ -4909,6 +4951,8 @@ static void nvme_init_ctrl(NvmeCtrl *n, PCIDevice *pci_dev)
     strpadcpy((char *)id->sn, sizeof(id->sn), n->params.serial, ' ');
 
     id->cntlid = cpu_to_le16(n->cntlid);
+
+    id->oaes = cpu_to_le32(NVME_OAES_NS_ATTR);
 
     id->rab = 6;
 

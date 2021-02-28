@@ -132,6 +132,11 @@ typedef struct NvmeFeatureVal {
     uint32_t    async_config;
 } NvmeFeatureVal;
 
+typedef struct NvmeChangedNs {
+    uint32_t nsid;
+    QTAILQ_ENTRY(NvmeChangedNs) entry;
+} NvmeChangedNs;
+
 typedef struct NvmeCtrl {
     PCIDevice    parent_obj;
     MemoryRegion bar0;
@@ -176,6 +181,8 @@ typedef struct NvmeCtrl {
     NvmeRequest **aer_reqs;
     QTAILQ_HEAD(, NvmeAsyncEvent) aer_queue;
     int         aer_queued;
+
+    QTAILQ_HEAD(, NvmeChangedNs) changed_ns_list;   /* Changed NS list log */
 
     NvmeSubsystem   *subsys;
 
